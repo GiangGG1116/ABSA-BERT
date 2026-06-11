@@ -1,161 +1,174 @@
 # ABSA-BERT
 
-ABSA-BERT is an Aspect-Based Sentiment Analysis project built with BERT and PyTorch. It includes two tasks:
-- `ATE` (Aspect Term Extraction): extract aspect tokens in a sentence.
-- `ATSC` (Aspect Term Sentiment Classification): predict sentiment for a target aspect.
+Aspect-Based Sentiment Analysis with BERT and PyTorch.
 
-## 1. Requirements
+ABSA-BERT implements a two-stage pipeline that first identifies aspect terms in
+a sentence and then predicts the sentiment expressed toward a selected aspect.
+The repository includes training scripts, single-example inference commands,
+dataset analysis utilities, tests, and a production-oriented Docker image.
 
-- Python `>=3.10`
-- `uv` is recommended for environment and dependency management
+## Overview
 
-## 2. Installation
+| Task | Purpose | Model output |
+| --- | --- | --- |
+| Aspect Term Extraction (ATE) | Locate aspect terms in a sentence | Token-level BIO labels |
+| Aspect-Term Sentiment Classification (ATSC) | Classify sentiment toward a given aspect | Negative, neutral, or positive |
 
-From the project root (`ABSA-BERT`):
+Both tasks fine-tune `bert-base-uncased` by default:
 
-```bash
-uv sync
+- **ATE:** BERT token representations followed by a linear sequence-labeling head.
+- **ATSC:** BERT's pooled `[CLS]` representation followed by a linear classification head.
+
+```mermaid
+flowchart LR
+    A[Input sentence] --> B[ATE model]
+    B --> C[Extracted aspect]
+    A --> D[ATSC model]
+    C --> D
+    D --> E[Aspect sentiment]
 ```
 
-If you want editable install plus development dependencies:
+## Requirements
+
+- Python 3.10 or later
+- [`uv`](https://docs.astral.sh/uv/) for the recommended setup
+- CUDA-compatible GPU for faster training, or CPU for development and inference
+
+The first model run downloads the pretrained BERT tokenizer and weights from
+Hugging Face.
+
+## Quick Start
+
+Clone the repository and install the project with its development dependencies:
 
 ```bash
+git clone https://github.com/GiangGG1116/ABSA-BERT.git
+cd ABSA-BERT
 uv sync --extra dev
 ```
 
-## 3. Data
-
-Default dataset paths:
-- `./data/raw/restaurants_train.csv`
-- `./data/raw/restaurants_test.csv`
-
-Download data with:
+The repository includes restaurant review data under `data/data/`. Train both
+models with:
 
 ```bash
-bash scripts/download_data.sh
+uv run absa-train-ate \
+  --train_csv data/data/restaurants_train.csv \
+  --valid_csv data/data/restaurants_test.csv \
+  --save_dir outputs/ate
+
+uv run absa-train-atsc \
+  --train_csv data/data/restaurants_train.csv \
+  --valid_csv data/data/restaurants_test.csv \
+  --save_dir outputs/atsc
 ```
 
-Note: training and prediction expect CSV files with 3 list-string columns:
-- `Tokens`
-- `Tags`
-- `Polarities`
+Each command automatically uses CUDA when available and saves the checkpoint
+with the lowest validation loss as `<save_dir>/best.pt`.
 
-## 4. Train
-
-### Train ATE
+Run inference:
 
 ```bash
-uv run python -m absa.train.ate \
-  --train_csv ./data/raw/restaurants_train.csv \
-  --valid_csv ./data/raw/restaurants_test.csv \
-  --save_dir ./outputs/ate
-```
-
-### Train ATSC
-
-```bash
-uv run python -m absa.train.atsc \
-  --train_csv ./data/raw/restaurants_train.csv \
-  --valid_csv ./data/raw/restaurants_test.csv \
-  --save_dir ./outputs/atsc
-```
-
-The best checkpoint is saved as `best.pt` inside `save_dir`.
-
-## 5. Inference
-
-### Predict ATE
-
-```bash
-uv run python -m absa.predict.ate \
-  --ckpt ./outputs/ate/best.pt \
+uv run absa-predict-ate \
+  --ckpt outputs/ate/best.pt \
   --sentence "The food was great but the service was slow."
-```
 
-### Predict ATSC
-
-```bash
-uv run python -m absa.predict.atsc \
-  --ckpt ./outputs/atsc/best.pt \
+uv run absa-predict-atsc \
+  --ckpt outputs/atsc/best.pt \
   --sentence "The food was great but the service was slow." \
   --aspect "food"
 ```
 
-## 6. Data Analysis (EDA)
+ATE inference returns WordPiece tokens and their predicted label IDs. ATSC
+inference returns the predicted label ID and its sentiment name.
 
-Built-in data analysis command:
+## Dataset Format
 
-```bash
-uv run absa-analyze-data
+Training and validation data must be CSV files whose first three columns contain
+Python-style list strings:
+
+| Column | Description | Label values |
+| --- | --- | --- |
+| `Tokens` | Tokenized sentence | String tokens |
+| `Tags` | BIO label for each token | `0`: outside, `1`: beginning, `2`: inside |
+| `Polarities` | Sentiment label for each token | `-1`: not an aspect, `0`: negative, `1`: neutral, `2`: positive |
+
+Example:
+
+```csv
+Tokens,Tags,Polarities
+"['The', 'bread', 'is', 'excellent']","[0, 1, 0, 0]","[-1, 2, -1, -1]"
 ```
 
-Statistics are printed to the console and saved to:
-- `./outputs/data_analysis.json`
+The number of values in `Tags` and `Polarities` should match the number of
+values in `Tokens`.
 
-You can pass custom paths:
+To use custom data, pass its paths through `--train_csv` and `--valid_csv`.
+The helper script at `scripts/download_data.sh` is a template and requires a
+valid Google Drive file ID before use.
+
+## Training Configuration
+
+Both training commands expose the same core options:
+
+| Option | Default | Description |
+| --- | ---: | --- |
+| `--model_name` | `bert-base-uncased` | Hugging Face model identifier |
+| `--epochs` | `5` | Number of training epochs |
+| `--batch_size` | `32` | Batch size |
+| `--lr` | `1e-5` | AdamW learning rate |
+| `--weight_decay` | `0.01` | AdamW weight decay |
+| `--grad_clip` | `1.0` | Maximum gradient norm |
+| `--max_length` | `128` | Maximum tokenized sequence length |
+| `--seed` | `42` | Random seed |
+| `--save_dir` | Task-specific | Checkpoint output directory |
+
+For the complete command reference:
+
+```bash
+uv run absa-train-ate --help
+uv run absa-train-atsc --help
+```
+
+## Data Analysis
+
+Generate summary statistics for the train and validation splits:
 
 ```bash
 uv run absa-analyze-data \
-  --train_csv ./data/raw/restaurants_train.csv \
-  --valid_csv ./data/raw/restaurants_test.csv \
-  --out_json ./outputs/my_analysis.json
+  --train_csv data/data/restaurants_train.csv \
+  --valid_csv data/data/restaurants_test.csv \
+  --out_json outputs/data_analysis.json
 ```
 
-## 7. Test and Lint
+The report includes row counts, duplicates, sentence-length statistics, aspect
+counts, polarity distribution, and vocabulary size.
 
-Run tests:
+## Development
+
+Run the test suite and code-quality checks:
 
 ```bash
 uv run pytest
-```
-
-Lint:
-
-```bash
 uv run ruff check src tests
+uv run ruff format --check src tests
 ```
 
-Format code:
+Equivalent Make targets are also available. Because their dataset defaults point
+to `data/raw/`, provide the bundled dataset paths explicitly:
 
 ```bash
-uv run ruff format src tests
+uv run make train-ate \
+  TRAIN_CSV=data/data/restaurants_train.csv \
+  VALID_CSV=data/data/restaurants_test.csv
+
+uv run make test
+uv run make lint
 ```
 
-## 8. Docker
+## Current Scope
 
-Build image:
-
-```bash
-docker build -t absa-bert:latest .
-```
-
-Run ATE training in Docker (if your machine has GPU support):
-
-```bash
-docker run --rm --gpus all \
-  -v $(pwd)/data:/app/data \
-  -v $(pwd)/outputs:/app/outputs \
-  absa-bert:latest make train-ate
-```
-
-## 9. Main Project Structure
-
-```text
-ABSA-BERT/
-|- configs/
-|- data/
-|  |- raw/
-|  |- processed/
-|- outputs/
-|- scripts/
-|- src/absa/
-|  |- analyze.py
-|  |- config.py
-|  |- data.py
-|  |- models.py
-|  |- predict/
-|  |- train/
-|- tests/
-|- pyproject.toml
-|- Makefile
-```
+- Inference commands process one example at a time.
+- ATE inference exposes token-level label IDs; post-processing them into
+  human-readable aspect spans is not yet included.
+- Training selects checkpoints by validation loss and does not currently export
+  task-specific evaluation reports.
